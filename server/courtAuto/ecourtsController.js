@@ -49,6 +49,29 @@ async function searchECourts(req, res) {
       waitUntil: "domcontentloaded",
     });
 
+    await page.getByRole("link", { name: "Case Status", exact: true }).click();
+    await page.getByRole("heading", { name: /Case Status/ }).waitFor();
+
+    await page.getByLabel("Select State").selectOption({ label: input.state });
+
+    await page
+      .getByLabel("Select District")
+      .selectOption({ label: input.district });
+
+    await page
+      .getByLabel("Select Court Complex")
+      .selectOption({ label: input.courtComplex });
+
+    await page
+      .getByRole("textbox", { name: /Petitioner\/Respondent/ })
+      .fill(String(input.partyName).trim());
+
+    await page
+      .getByRole("textbox", { name: /Registration Year/ })
+      .fill(String(input.year).trim());
+
+    await page.getByRole("radio", { name: input.status }).check();
+
     const title = await page.title();
 
     return res.json({
@@ -57,8 +80,8 @@ async function searchECourts(req, res) {
       totalCases: 0,
       cases: [],
       logs: [
-        `Opened the eCourts homepage: ${title}`,
-        "The case search has not run yet.",
+        `Opened the Case Status page: ${title}`,
+        "Filled the search form. CAPTCHA has not been entered and the search has not been submitted.",
       ],
     });
   } catch (error) {
@@ -67,7 +90,7 @@ async function searchECourts(req, res) {
       durationMs: Date.now() - startTime,
       totalCases: 0,
       cases: [],
-      logs: [`Could not open the eCourts homepage: ${error.message}`],
+      logs: [`Could not prepare the Case Status search: ${error.message}`],
     });
   } finally {
     if (browser) {
