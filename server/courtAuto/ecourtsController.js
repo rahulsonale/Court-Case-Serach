@@ -2,7 +2,6 @@ const { chromium } = require("playwright");
 const { randomUUID } = require("crypto");
 const { readCaptcha } = require("./captcha");
 
-// These sessions are kept in memory while the user enters the CAPTCHA.
 const browserSessions = new Map();
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -17,6 +16,32 @@ async function closeSession(sessionId) {
   browserSessions.delete(sessionId);
 
   await session.browser.close().catch(() => {});
+}
+
+async function waitForOption(select, optionLabel) {
+  await select
+    .locator("option")
+    .filter({ hasText: optionLabel })
+    .waitFor({ state: "attached", timeout: 15000 });
+}
+
+async function selectAndVerify(page, select, label, expectedValue) {
+  let selectedValue = "";
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await select.selectOption({ label: expectedValue });
+    await page.waitForTimeout(1000);
+
+    selectedValue = (await select.locator("option:checked").innerText()).trim();
+
+    if (selectedValue === expectedValue) {
+      return;
+    }
+  }
+
+  throw new Error(
+    `${label} selection failed. Expected "${expectedValue}", got "${selectedValue}".`,
+  );
 }
 
 async function searchECourts(req, res) {
@@ -68,20 +93,44 @@ async function searchECourts(req, res) {
       waitUntil: "domcontentloaded",
     });
 
-    await page.getByRole("link", { name: "Case Status", exact: true }).click();
-    await page.getByRole("heading", { name: /Case Status/ }).waitFor();
+    const pageText = await page.locator("body").innerText();
 
-    await page.getByLabel("Select State").selectOption({
-      label: String(input.state).trim(),
+    if (/Search Page not Found/i.test(pageText)) {
+      throw new Error(`eCourts returned its not-found page at ${page.url()}`);
+    }
+
+    const caseStatusLink = page.getByRole("link", {
+      name: "Case Status",
+      exact: true,
     });
 
-    await page.getByLabel("Select District").selectOption({
-      label: String(input.district).trim(),
-    });
+    await caseStatusLink.waitFor({ state: "visible", timeout: 15000 });
+    await caseStatusLink.click();
 
-    await page.getByLabel("Select Court Complex").selectOption({
-      label: String(input.courtComplex).trim(),
-    });
+    await page
+      .getByRole("heading", { name: "Case Status", exact: true })
+      .waitFor({ state: "visible", timeout: 15000 });
+
+    const stateSelect = page.getByLabel("Select State");
+    const districtSelect = page.getByLabel("Select District");
+    const courtComplexSelect = page.getByLabel("Select Court Complex");
+
+    const stateName = String(input.state).trim();
+    const districtName = String(input.district).trim();
+    const courtComplexName = String(input.courtComplex).trim();
+
+    await selectAndVerify(page, stateSelect, "State", stateName);
+
+    await waitForOption(districtSelect, districtName);
+    await selectAndVerify(page, districtSelect, "District", districtName);
+
+    await waitForOption(courtComplexSelect, courtComplexName);
+    await selectAndVerify(
+      page,
+      courtComplexSelect,
+      "Court Complex",
+      courtComplexName,
+    );
 
     await page
       .getByRole("textbox", { name: /Petitioner\/Respondent/ })
@@ -101,24 +150,21 @@ async function searchECourts(req, res) {
       closeSession(sessionId);
     }, SESSION_TIMEOUT_MS);
 
-    // Keep the same page open for the second request.
     browserSessions.set(sessionId, {
       browser,
       page,
       timeout,
     });
 
-    const captchaImageBase64 = captchaImage.toString("base64");
-
     return res.json({
       success: true,
       sessionId,
-      captchaImage: `data:image/png;base64,${captchaImageBase64}`,
+      captchaImage: `data:image/png;base64,${captchaImage.toString("base64")}`,
       captchaSuggestion: captchaSuggestion || "",
       durationMs: Date.now() - startTime,
       logs: [
         "The search form is ready.",
-        "Review the CAPTCHA suggestion, enter the CAPTCHA, then submit it to the second endpoint.",
+        "Review the CAPTCHA suggestion and enter the CAPTCHA shown in the browser.",
       ],
     });
   } catch (error) {
@@ -150,7 +196,8 @@ async function submitECourtsCaptcha(req, res) {
     });
   }
 
-  const session = browserSessions.get(String(sessionId).trim());
+  const normalizedSessionId = String(sessionId).trim();
+  const session = browserSessions.get(normalizedSessionId);
 
   if (!session) {
     return res.status(410).json({
@@ -236,7 +283,6 @@ async function submitECourtsCaptcha(req, res) {
         text.replace(/\s+/g, " ").trim(),
       );
 
-      // Skip headers and court-complex group rows.
       if (cells.length < 3 || !/^\d+$/.test(cells[0])) {
         continue;
       }
@@ -267,7 +313,7 @@ async function submitECourtsCaptcha(req, res) {
       logs: [`Could not submit the eCourts search: ${error.message}`],
     });
   } finally {
-    await closeSession(String(sessionId).trim());
+    await closeSession(normalizedSessionId);
   }
 }
 
